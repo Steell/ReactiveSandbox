@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="" Height="450" Width="500">
 
-    <Canvas Name="Canvas" HorizontalAlignment="Center" VerticalAlignment="Center">
-        <Rectangle Name="Rectangle" Width="100" Height="100" Stroke="Black" Fill="Black" HorizontalAlignment="Center" VerticalAlignment="Center" Canvas.Left="-50" Canvas.Top="-50" />
+    <Canvas Name="Canvas" Background="White" Focusable="True">
+        <Rectangle Name="Rectangle" Width="100" Height="100" Stroke="Black" Fill="Black" Cursor="Hand"  />
     </Canvas>
 </Window>
