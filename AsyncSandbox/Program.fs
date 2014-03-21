@@ -60,4 +60,4 @@ let async_tests() =
         interleave
     ] |> List.iter run_test
 
-async_test()
+async_tests()
