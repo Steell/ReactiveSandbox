@@ -27,16 +27,16 @@ let loadWindow() =
                 | _ -> false
             // update the position of the old world, 
             // and if the mouse button was released update the offset
-            fun { drag_offset=offset } -> { position=new_pos; drag_offset= if dragging then offset else None }
+            fun { drag_offset=offset } -> { position=new_pos; drag_offset=if dragging then offset else None }
         window.Canvas.PreviewMouseMove |> Observable.map move_handler
 
     // produces a world updater for drag flag when mouse is pressed
     let mouse_down_update = 
         let mouse_down_handler (args : Input.MouseButtonEventArgs) =
-            let new_offset = args.GetPosition window.Rectangle
+            let new_offset = args.GetPosition window.NodeRect
             // update the world's offset
             fun { position=pos } -> { drag_offset=Some(new_offset); position=pos }
-        window.Rectangle.MouseDown |> Observable.map mouse_down_handler
+        window.NodeRect.PreviewMouseDown |> Observable.map mouse_down_handler
 
     // one event that is fired if any of the events are fired
     let all_updates = Observable.merge move_update mouse_down_update
@@ -49,15 +49,15 @@ let loadWindow() =
         |> Observable.subscribe (
             // update rectangle position
             fun new_position -> 
-                Canvas.SetLeft(window.Rectangle, new_position.X)
-                Canvas.SetTop(window.Rectangle, new_position.Y))
+                Canvas.SetLeft(window.NodeCanvas, new_position.X)
+                Canvas.SetTop(window.NodeCanvas, new_position.Y))
 
     let color_change_handle =
         let hello toggle =
             let new_fill, new_text = if toggle then Media.Brushes.Red, "Goodbye" else Media.Brushes.Black, "Hello"
-            window.Rectangle.Fill <- new_fill :> Media.Brush
+            window.NodeRect.Fill <- new_fill :> Media.Brush
             async {
-                return! Async.AwaitEvent <| Event.map ignore window.Rectangle.ContextMenuOpening
+                let! _ = Async.AwaitEvent window.NodeRect.ContextMenuOpening
                 window.HelloMenu.Header <- new_text
             } |> Async.StartImmediate
         window.HelloMenu.Click |> Observable.scan (fun state _ -> not state) false |> Observable.subscribe hello
