@@ -9,8 +9,7 @@ type MainWindow = XAML<"MainWindow.xaml">
 
 // offset:   Some(Point) = location on the rectangle the mouse is dragging from, or None if no drag is taking place
 // position: Point       = current position of the mouse
-type World = { drag_offset : Point option; position : Point }
-
+type DragCommandData = { drag_offset : Point option; position : Point }
 let world0 = { drag_offset=None; position=new Point(0., 0.) }
 
 let loadWindow() =
@@ -39,13 +38,8 @@ let loadWindow() =
             fun { position=pos } -> { drag_offset=Some(new_offset); position=pos }
         window.Rectangle.MouseDown |> Observable.map mouse_down_handler
 
-//    let mouse_up_update =
-//        let mouse_up_handler (args : Input.MouseButtonEventArgs) { position=pos } = 
-//            { drag_offset=None; position=pos }
-//        window.Canvas.MouseUp |> Observable.map mouse_up_handler
-
     // one event that is fired if any of the events are fired
-    let all_updates = [ move_update; mouse_down_update; (* mouse_up_update *) ] |> List.reduce Observable.merge
+    let all_updates = Observable.merge move_update mouse_down_update
 
     let rect_drag_handle = 
         all_updates
@@ -57,7 +51,17 @@ let loadWindow() =
             fun new_position -> 
                 Canvas.SetLeft(window.Rectangle, new_position.X)
                 Canvas.SetTop(window.Rectangle, new_position.Y))
-   
+
+    let color_change_handle =
+        let hello toggle =
+            let new_fill, new_text = if toggle then Media.Brushes.Red, "Goodbye" else Media.Brushes.Black, "Hello"
+            window.Rectangle.Fill <- new_fill :> Media.Brush
+            async {
+                return! Async.AwaitEvent <| Event.map ignore window.Rectangle.ContextMenuOpening
+                window.HelloMenu.Header <- new_text
+            } |> Async.StartImmediate
+        window.HelloMenu.Click |> Observable.scan (fun state _ -> not state) false |> Observable.subscribe hello
+
     window.Root
 
 [<STAThread>]

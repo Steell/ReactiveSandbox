@@ -4,6 +4,13 @@
         Title="" Height="450" Width="500">
 
     <Canvas Name="Canvas" Background="White" Focusable="True">
-        <Rectangle Name="Rectangle" Width="100" Height="100" Stroke="Black" Fill="Black" Cursor="Hand"  />
+        <Rectangle Name="Rectangle" Width="100" Height="100" Stroke="Black" Fill="Black" Cursor="Hand">
+            <Rectangle.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Name="HelloMenu" Header="Hello" />
+                </ContextMenu>
+            </Rectangle.ContextMenu>
+        </Rectangle>
     </Canvas>
+    
 </Window>
