@@ -17,7 +17,7 @@
             <Grid Name ="NodeGrid" 
                   Width="{Binding ActualWidth, ElementName=NodeCanvas, Mode=OneWay}" 
                   Height="{Binding ActualHeight, ElementName=NodeCanvas, Mode=OneWay}">
-                <Button Width="60" Height="30" HorizontalAlignment="Center" VerticalAlignment="Center">Click Me</Button>
+                <Button Name="NodeButton"  Width="60" Height="30" HorizontalAlignment="Center" VerticalAlignment="Center">Click Me</Button>
             </Grid>
         </Canvas>
     </Canvas>

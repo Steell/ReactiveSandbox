@@ -60,4 +60,14 @@ let async_tests() =
         interleave
     ] |> List.iter run_test
 
-async_tests()
+//async_tests()
+
+//let task = Async.StartAsTask <| async { do! Async.Sleep 1000 }
+
+let task = new Tasks.Task<unit>(fun () -> ignore <| Thread.Sleep 1000)
+async {
+    let! _ = Async.AwaitTask task
+    Console.WriteLine "done"
+} |> Async.StartImmediate
+task.Start()
+ignore <| Console.ReadKey true
