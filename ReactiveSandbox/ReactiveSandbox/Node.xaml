@@ -9,6 +9,8 @@
         <Rectangle.ContextMenu>
             <ContextMenu>
                 <MenuItem Name="HelloMenu" Header="Hello" />
+                <Separator />
+                <MenuItem Name="DeleteMenu" Header="Delete" />
             </ContextMenu>
         </Rectangle.ContextMenu>
     </Rectangle>
