@@ -7,6 +7,9 @@
         <Canvas.ContextMenu>
             <ContextMenu>
                 <MenuItem Name="NewNodeMenuItem" Header="New Node" />
+                <Separator />
+                <MenuItem Name="UndoMenuItem" Header="Undo" />
+                <MenuItem Name="RedoMenuItem" Header="Redo" />
             </ContextMenu>
         </Canvas.ContextMenu>
     </Canvas>

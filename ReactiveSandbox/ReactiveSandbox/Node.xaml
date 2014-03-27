@@ -4,8 +4,8 @@
         Name="NodeCanvas" Width="100" Height="100">
     
     <Rectangle Name="NodeRect" Stroke="Black" Fill="Black" Cursor="Hand" RadiusX="10" RadiusY="10"
-               Width="{Binding ActualWidth, ElementName=NodeCanvas, Mode=OneWay}" 
-               Height="{Binding ActualHeight, ElementName=NodeCanvas, Mode=OneWay}">
+               Width="{Binding Width, ElementName=NodeCanvas, Mode=OneWay}" 
+               Height="{Binding Height, ElementName=NodeCanvas, Mode=OneWay}">
         <Rectangle.ContextMenu>
             <ContextMenu>
                 <MenuItem Name="HelloMenu" Header="Hello" />
@@ -16,8 +16,8 @@
     </Rectangle>
    
     <Grid Name ="NodeGrid" 
-          Width="{Binding ActualWidth, ElementName=NodeCanvas, Mode=OneWay}" 
-          Height="{Binding ActualHeight, ElementName=NodeCanvas, Mode=OneWay}">
+          Width="{Binding Width, ElementName=NodeCanvas, Mode=OneWay}" 
+          Height="{Binding Height, ElementName=NodeCanvas, Mode=OneWay}">
         <Button Name="NodeButton"  Width="60" Height="30" HorizontalAlignment="Center" VerticalAlignment="Center">Click Me</Button>
     </Grid>
     

@@ -52,6 +52,7 @@
   <Import Project="$(FSharpTargetsPath)" />
   <ItemGroup>
     <Compile Include="ObservableExtensions.fs" />
+    <Compile Include="UndoRecorder.fs" />
     <Compile Include="XamlTypes.fs" />
     <Compile Include="Node.fs" />
     <Compile Include="App.fs" />
