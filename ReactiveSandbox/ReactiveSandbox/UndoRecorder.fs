@@ -15,9 +15,6 @@ type private RecorderUpdate = Undo | Redo | Record of RecorderCommand
 type private CommandStack = RecorderCommand list
 type private RecorderState = { undo_stack: CommandStack; redo_stack: CommandStack }
 
-let private state0 = { undo_stack=[]; redo_stack=[] }
-
-
 type private ScanUpdate<'a, 'b> = UndoRedo of 'a | Original of 'b
 
 type UndoRecorder() =
@@ -25,6 +22,8 @@ type UndoRecorder() =
     let update_event = new Event<_>()
 
     let recorder_updated =
+        let state0 = { undo_stack=[]; redo_stack=[] }
+
         let update_state (_, state) = function
             | Undo ->
                 match state.undo_stack with
