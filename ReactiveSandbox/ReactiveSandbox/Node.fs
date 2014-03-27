@@ -11,6 +11,8 @@ open FSharp.Control.Observable
 open XamlTypes
 open UndoRecorder
 
+type DragCommand = Start | Stop
+
 let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : UndoRecorder) =
     // produces a world updater for when the mouse moves
     let move_update =
@@ -21,17 +23,17 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
                 then Some(args.GetPosition window.Root) 
                 else None)
 
+    let start_update = 
+        node.NodeRect.MouseDown
+        |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+        |> Observable.map    (fun args -> Some(args.GetPosition node.Root))
+    let stop_update =
+        Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
+        |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+        |> Observable.map    (fun _ -> None)
+
     // produces a world updater for drag flag when mouse is pressed
-    let start_stop_update =
-        let start_update = 
-            node.NodeRect.MouseDown
-            |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
-            |> Observable.map    (fun args -> Some(args.GetPosition node.Root))
-        let stop_update =
-            Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
-            |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
-            |> Observable.map    (fun _ -> None)
-        Observable.merge start_update stop_update
+    let start_stop_update = Observable.merge start_update stop_update
 
     let update_pos (position : Point) =
         Canvas.SetLeft(node.Root, position.X)
@@ -41,19 +43,25 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
 
     let move_node_command origin position = { redo=position; undo=origin}
 
+    let get_current_position() =
+        new Point(Canvas.GetLeft node.Root, Canvas.GetTop node.Root)
+
     let drag_command_stream = 
-        start_stop_update
-        |> Observable.map (function Some(offset) -> Some(new Point(Canvas.GetLeft node.Root, Canvas.GetTop node.Root)) | None -> None)
+        node.NodeRect.MouseDown
+        |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+        |> Observable.map    (fun args -> Start)
+        |> Observable.merge (
+            Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
+            |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+            |> Observable.map    (fun _ -> Stop))
         |> Observable.pairwise
         |> Observable.choose (
             function 
-                | Some(origin), None -> 
-                    let new_pos = new Point(Canvas.GetLeft node.Root, Canvas.GetTop node.Root)
-                    Some(move_node_command origin new_pos)
+                | Start, Stop -> Some(get_current_position())
                 | _ -> None)
     
     drag_command_stream
-    |> undo_record.RecordCommand
+    |> undo_record.Record (get_current_position())
     |> Observable.subscribe update_pos
     |> ignore
 
@@ -97,18 +105,22 @@ let initialize_color_change (node : NodeUI) (undo_recorder : UndoRecorder) =
     |> undo_recorder.RecordScanAccum (false, false)
     |> Observable.subscribe hello
 
-let initialize_deletion (node : NodeUI) (window : MainWindow) =
+let initialize_deletion (node : NodeUI) (window : MainWindow) (undo_record : UndoRecorder) =
     node.DeleteMenu.Click 
-    |> Observable.subscribe (fun _ -> window.NodeCanvas.Children.Remove node.Root |> ignore)
+    |> Observable.map (
+        fun _ -> 
+            { redo=fun () -> window.NodeCanvas.Children.Remove node.Root; 
+              undo=fun () -> (window.NodeCanvas.Children.Add node.Root |> ignore) })
+    |> undo_record.RecordAndSubscribe
 
 let new_node (window : MainWindow) (undo_record : UndoRecorder) (position : Point) : UIElement =
     let node = NodeUI()
 
-    let drag_handler = initialize_rect_drag node window undo_record
-    let color_handler = initialize_color_change node undo_record
-    let delete_handler = initialize_deletion node window
-
     Canvas.SetLeft(node.Root, position.X) // - node.NodeCanvas.Width / 2.)
     Canvas.SetTop(node.Root, position.Y)  // - node.NodeCanvas.Height / 2.)
+
+    let drag_handler = initialize_rect_drag node window undo_record
+    let color_handler = initialize_color_change node undo_record
+    let delete_handler = initialize_deletion node window undo_record
 
     node.Root :> UIElement

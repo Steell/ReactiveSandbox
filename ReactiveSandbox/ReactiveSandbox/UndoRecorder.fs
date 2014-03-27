@@ -29,17 +29,22 @@ type UndoRecorder() =
             | Undo ->
                 match state.undo_stack with
                 | command::stack -> Some(command.undo_comm), { undo_stack=stack; redo_stack=command::state.redo_stack }
-                | _              -> None,               state
+                | _              -> None, state
             | Redo -> 
                 match state.redo_stack with
                 | command::stack -> Some(command.redo_comm), { undo_stack=command::state.undo_stack; redo_stack=stack }
-                | _              -> None,             state
+                | _              -> None, state
             | Record(command) -> None, { undo_stack=command::state.undo_stack; redo_stack=[] }
+        
         update_event.Publish
         |> Observable.scan update_state (None, state0)
         |> Observable.choose (function (c, _) -> c)
         |> Observable.subscribe (fun c -> c())
-        
+       
+    /// Creates a new Observable out of an Observable of Commands. As Commands come in via
+    /// the original Observable, they are recorded for undo/redo and the redo Action is
+    /// produced in the result Observable. If a Command produced by the original Observable
+    /// is later undone or redone, the respective Action is produced in the result Observable.
     member x.RecordCommand (obs : IObservable<Command<'a>>) : IObservable<'a> =
         { new IObservable<'a> with
             member self.Subscribe(observer) = 
@@ -58,18 +63,15 @@ type UndoRecorder() =
                 Async.StartImmediate(relay, cts.Token)
                 { new IDisposable with member this.Dispose() = cts.Cancel() } }
 
+    /// Given an Observable of Commands of Actions (unit -> unit), record the commands for
+    /// undo/redo and then immediately subscribe to them, where the subscription callback
+    /// is the produced Action from the Command.
     member x.RecordAndSubscribe (obs : IObservable<Command<unit -> unit>>) : IDisposable =
         x.RecordCommand obs |> Observable.subscribe (fun f -> f())
-
-    member x.Record (initial_state : 'a) (obs : IObservable<'a>) : IObservable<'a> =
-        Observable.result initial_state
-        |> Observable.merge obs 
-        |> Observable.pairwise
-        |> Observable.map (function old, current -> { undo=old; redo=current })
-        |> x.RecordCommand
-
-    ///obs comes in -> update state, record new state
-    ///undo/redo -> revert to stored state, update saved version (do NOT re-apply func)
+        
+    /// Similar to Observable.scan, but records all states for undo/redo. If an undo or redo
+    /// occurs for one of these state changes, the result Observable will be passed the
+    /// recorded state.
     member x.RecordScan (f : 'a -> 'b -> 'a) (initial_state : 'a) (obs : IObservable<'b>) : IObservable<'a> =
         { new IObservable<'a> with
             member self.Subscribe(observer) = 
@@ -106,10 +108,21 @@ type UndoRecorder() =
                         //disposer.Dispose() 
                         cts.Cancel() } }
 
+    /// Records all data coming from the given Observable for undo/redo. Undoing or redoing
+    /// will cause recorded data to be propagated to the result Observable.
+    member x.Record (initial_state : 'a) (obs : IObservable<'a>) : IObservable<'a> =
+        x.RecordScan (fun _ x -> x) initial_state obs
+
+    /// Similar to Observable.scanAccumulate, but records all states for undo/redo. If an undo
+    /// or redo occurs for one of these state changes, the result Observable will be passed the
+    /// recorded state.
     member x.RecordScanAccum (initial_state : 'a) (obs : IObservable<'a -> 'a>) : IObservable<'a> =
         x.RecordScan (fun state f -> f state) initial_state obs
 
+    /// Perfoms an Undo operation
     member x.PerformUndo() = update_event.Trigger Undo
+
+    ///Performs a Redo operation
     member x.PerformRedo() = update_event.Trigger Redo
 
     interface IDisposable with
