@@ -53,7 +53,7 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
                 | _ -> None)
     
     drag_command_stream
-    |> undo_record.Record
+    |> undo_record.RecordCommand
     |> Observable.subscribe update_pos
     |> ignore
 
@@ -94,8 +94,7 @@ let initialize_color_change (node : NodeUI) (undo_recorder : UndoRecorder) =
         Async.StartImmediate text_update
 
     Observable.merge node_click menu_click
-    |> undo_recorder.AutoRecord
-    |> Observable.scanAccumulate (false, false)
+    |> undo_recorder.RecordScanAccum (false, false)
     |> Observable.subscribe hello
 
 let initialize_deletion (node : NodeUI) (window : MainWindow) =

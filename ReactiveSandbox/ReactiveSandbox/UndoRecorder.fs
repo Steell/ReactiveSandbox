@@ -1,6 +1,7 @@
 ﻿module UndoRecorder
 
 open System
+open FSharp.Control
 open FSharp.Control.Observable
 
 type Action<'T> = 'T
@@ -17,6 +18,8 @@ type private RecorderState = { undo_stack: CommandStack; redo_stack: CommandStac
 let private state0 = { undo_stack=[]; redo_stack=[] }
 
 
+type private ScanUpdate<'a, 'b> = UndoRedo of 'a | Original of 'b
+
 type UndoRecorder() =
     
     let update_event = new Event<_>()
@@ -31,44 +34,83 @@ type UndoRecorder() =
                 match state.redo_stack with
                 | command::stack -> Some(command.redo_comm), { undo_stack=command::state.undo_stack; redo_stack=stack }
                 | _              -> None,             state
-            | Record(command) -> Some(command.redo_comm), { undo_stack=command::state.undo_stack; redo_stack=[] }
+            | Record(command) -> None, { undo_stack=command::state.undo_stack; redo_stack=[] }
         update_event.Publish
         |> Observable.scan update_state (None, state0)
         |> Observable.choose (function (c, _) -> c)
         |> Observable.subscribe (fun c -> c())
         
-    member x.Record (obs : IObservable<Command<'a>>) : IObservable<'a> =
-        let trigger_event = new Event<'a>()
-        let relay = 
-            async {
-                while true do
-                    let! result = Async.AwaitObservable obs
-                    let rec_command = 
-                        { redo_comm=(fun () -> (trigger_event.Trigger <| result.redo))
-                          undo_comm=(fun () -> (trigger_event.Trigger <| result.undo)) }
-                    update_event.Trigger <| Record(rec_command) }
+    member x.RecordCommand (obs : IObservable<Command<'a>>) : IObservable<'a> =
         { new IObservable<'a> with
             member self.Subscribe(observer) = 
-                let disposer = trigger_event.Publish.Subscribe observer
+
+                let relay = 
+                    async {
+                        while true do
+                            let! result = Async.AwaitObservable obs
+                            let rec_command = 
+                                { redo_comm=(fun () -> (observer.OnNext <| result.redo))
+                                  undo_comm=(fun () -> (observer.OnNext <| result.undo)) }
+                            update_event.Trigger <| Record(rec_command)
+                            observer.OnNext result.redo }
+
                 let cts = new System.Threading.CancellationTokenSource()
                 Async.StartImmediate(relay, cts.Token)
-                { new IDisposable with 
-                    member this.Dispose() = 
-                        cts.Cancel()
-                        disposer.Dispose() } }
+                { new IDisposable with member this.Dispose() = cts.Cancel() } }
 
     member x.RecordAndSubscribe (obs : IObservable<Command<unit -> unit>>) : IDisposable =
-        x.Record obs |> Observable.subscribe (fun f -> f())
+        x.RecordCommand obs |> Observable.subscribe (fun f -> f())
 
-    member x.AutoRecord (obs : IObservable<'a>) : IObservable<'a> =
-        obs
+    member x.Record (initial_state : 'a) (obs : IObservable<'a>) : IObservable<'a> =
+        Observable.result initial_state
+        |> Observable.merge obs 
         |> Observable.pairwise
         |> Observable.map (function old, current -> { undo=old; redo=current })
-        |> x.Record
+        |> x.RecordCommand
+
+    ///obs comes in -> update state, record new state
+    ///undo/redo -> revert to stored state, update saved version (do NOT re-apply func)
+    member x.RecordScan (f : 'a -> 'b -> 'a) (initial_state : 'a) (obs : IObservable<'b>) : IObservable<'a> =
+        { new IObservable<'a> with
+            member self.Subscribe(observer) = 
+                //Trigger this when you want to propagate 
+                let trigger_event = new Event<'a>()
+                let undo_redo_stream =  trigger_event.Publish |> Observable.map UndoRedo
+
+                let rec scanner (state : 'a) = 
+                    async {
+                        let! result = 
+                            obs
+                            |> Observable.map Original
+                            |> Observable.merge undo_redo_stream
+                            |> Async.AwaitObservable
+                        match result with
+                        | Original(b) -> 
+                            let new_state = f state b
+                            let rec_command = 
+                                { redo_comm=(fun () -> (trigger_event.Trigger <| new_state))
+                                  undo_comm=(fun () -> (trigger_event.Trigger <| state)) }
+                            update_event.Trigger <| Record(rec_command)
+                            observer.OnNext new_state
+                            return! scanner new_state 
+                        | UndoRedo(a) ->
+                            observer.OnNext a
+                            return! scanner a
+                    }
+
+                //let disposer = trigger_event.Publish.Subscribe observer
+                let cts = new System.Threading.CancellationTokenSource()
+                Async.StartImmediate(scanner initial_state, cts.Token)
+                { new IDisposable with 
+                    member this.Dispose() = 
+                        //disposer.Dispose() 
+                        cts.Cancel() } }
+
+    member x.RecordScanAccum (initial_state : 'a) (obs : IObservable<'a -> 'a>) : IObservable<'a> =
+        x.RecordScan (fun state f -> f state) initial_state obs
 
     member x.PerformUndo() = update_event.Trigger Undo
     member x.PerformRedo() = update_event.Trigger Redo
 
     interface IDisposable with
-        member x.Dispose() =
-            recorder_updated.Dispose()
+        member x.Dispose() = recorder_updated.Dispose()
