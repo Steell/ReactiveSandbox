@@ -25,11 +25,11 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
 
     let start_update = 
         node.NodeRect.MouseDown
-        |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+        |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
         |> Observable.map    (fun args -> Some(args.GetPosition node.Root))
     let stop_update =
         Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
-        |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+        |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
         |> Observable.map    (fun _ -> None)
 
     // produces a world updater for drag flag when mouse is pressed
@@ -48,11 +48,11 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
 
     let drag_command_stream = 
         node.NodeRect.MouseDown
-        |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+        |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
         |> Observable.map    (fun args -> Start)
         |> Observable.merge (
             Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
-            |> Observable.filter (fun args -> args.ChangedButton = Input.MouseButton.Left)
+            |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
             |> Observable.map    (fun _ -> Stop))
         |> Observable.pairwise
         |> Observable.choose (
