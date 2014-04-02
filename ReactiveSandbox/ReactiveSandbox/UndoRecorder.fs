@@ -17,9 +17,12 @@ type private RecorderState = { undo_stack: CommandStack; redo_stack: CommandStac
 
 type private ScanUpdate<'a, 'b> = UndoRedo of 'a | Original of 'b
 
+/// Records data from Observables and gives a way to re-send old data.
 type UndoRecorder() =
     
     let update_event = new Event<_>()
+
+    let record = Record >> update_event.Trigger
 
     let recorder_updated =
         let state0 = { undo_stack=[]; redo_stack=[] }
@@ -46,21 +49,17 @@ type UndoRecorder() =
     /// is later undone or redone, the respective Action is produced in the result Observable.
     member x.RecordCommand (obs : IObservable<Command<'a>>) : IObservable<'a> =
         { new IObservable<'a> with
-            member self.Subscribe(observer) = 
+            member self.Subscribe observer = 
 
-                let relay = 
-                    async {
-                        while true do
-                            let! result = Async.AwaitObservable obs
-                            let rec_command = 
-                                { redo_comm=(fun () -> (observer.OnNext <| result.redo))
-                                  undo_comm=(fun () -> (observer.OnNext <| result.undo)) }
-                            update_event.Trigger <| Record(rec_command)
-                            observer.OnNext result.redo }
+                let recorder data =
+                    let rec_command = 
+                        { redo_comm=(fun () -> observer.OnNext data.redo)
+                          undo_comm=(fun () -> observer.OnNext data.undo) }
+                    record rec_command
+                    observer.OnNext data.redo
 
-                let cts = new System.Threading.CancellationTokenSource()
-                Async.StartImmediate(relay, cts.Token)
-                { new IDisposable with member this.Dispose() = cts.Cancel() } }
+                obs |> Observable.subscribe recorder }
+
 
     /// Given an Observable of Commands of Actions (unit -> unit), record the commands for
     /// undo/redo and then immediately subscribe to them, where the subscription callback
@@ -73,39 +72,25 @@ type UndoRecorder() =
     /// recorded state.
     member x.RecordScan (f : 'a -> 'b -> 'a) (initial_state : 'a) (obs : IObservable<'b>) : IObservable<'a> =
         { new IObservable<'a> with
-            member self.Subscribe(observer) = 
-                //Trigger this when you want to propagate 
-                let trigger_event = new Event<'a>()
-                let undo_redo_stream =  trigger_event.Publish |> Observable.map UndoRedo
+            member self.Subscribe observer = 
 
-                let rec scanner (state : 'a) = 
-                    async {
-                        let! result = 
-                            obs
-                            |> Observable.map Original
-                            |> Observable.merge undo_redo_stream
-                            |> Async.AwaitObservable
-                        match result with
-                        | Original(b) -> 
-                            let new_state = f state b
-                            let rec_command = 
-                                { redo_comm=(fun () -> (trigger_event.Trigger <| new_state))
-                                  undo_comm=(fun () -> (trigger_event.Trigger <| state)) }
-                            update_event.Trigger <| Record(rec_command)
-                            observer.OnNext new_state
-                            return! scanner new_state 
-                        | UndoRedo(a) ->
-                            observer.OnNext a
-                            return! scanner a
-                    }
-
-                //let disposer = trigger_event.Publish.Subscribe observer
-                let cts = new System.Threading.CancellationTokenSource()
-                Async.StartImmediate(scanner initial_state, cts.Token)
-                { new IDisposable with 
-                    member this.Dispose() = 
-                        //disposer.Dispose() 
-                        cts.Cancel() } }
+                let state = ref initial_state
+                let rec recorder data =
+                    match data with
+                    | Original(b) ->
+                        let old_state = !state
+                        let new_state = f old_state b
+                        let rec_command = 
+                            { redo_comm=(fun () -> recorder <| UndoRedo(new_state))
+                              undo_comm=(fun () -> recorder <| UndoRedo(old_state)) }
+                        record rec_command
+                        observer.OnNext new_state
+                        state := new_state
+                    | UndoRedo(new_state) ->
+                        observer.OnNext new_state
+                        state := new_state
+                
+                obs |> Observable.subscribe (Original >> recorder) }
 
     /// Records all data coming from the given Observable for undo/redo. Undoing or redoing
     /// will cause recorded data to be propagated to the result Observable.
