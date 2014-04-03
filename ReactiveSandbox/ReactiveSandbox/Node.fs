@@ -14,15 +14,15 @@ open UndoRecorder
 let initialize_color_change (node : NodeUI) (undo_recorder : UndoRecorder) =
     let node_click = 
         node.NodeButton.Click
-        |> Observable.map
-            (fun _ -> 
-                fun (menu_state, button_state) -> menu_state, not button_state)
+            |> Observable.map
+                (fun _ -> 
+                    fun (menu_state, button_state) -> menu_state, not button_state)
 
     let menu_click =
         node.HelloMenu.Click 
-        |> Observable.map
-            (fun _ -> 
-                fun (menu_state, button_state) -> not menu_state, button_state)
+            |> Observable.map
+                (fun _ -> 
+                    fun (menu_state, button_state) -> not menu_state, button_state)
 
     let hello (m, b) =
         let new_fill, new_text = 
@@ -39,16 +39,16 @@ let initialize_color_change (node : NodeUI) (undo_recorder : UndoRecorder) =
         Async.StartImmediate text_update
 
     Observable.merge node_click menu_click
-    |> undo_recorder.RecordStreamAndScanAccum "Changed Color" (false, false)
-    |> Observable.subscribe hello
+        |> undo_recorder.RecordStreamAndScanAccum "Changed Color" (false, false)
+        |> Observable.subscribe hello
 
 let initialize_deletion (node : NodeUI) (window : MainWindow) (undo_record : UndoRecorder) =
     node.DeleteMenu.Click 
-    |> Observable.map (fun _ -> node.Root)
-    |> undo_record.RecordStream "Delete Node"
-    |> Observable.subscribe (function
-        | Redo(node) -> window.NodeCanvas.Children.Remove node
-        | Undo(node) -> window.NodeCanvas.Children.Add node |> ignore)
+        |> Observable.map (fun _ -> node.Root)
+        |> undo_record.RecordStream "Delete Node"
+        |> Observable.subscribe (function
+            | Redo(node) -> window.NodeCanvas.Children.Remove node
+            | Undo(node) -> window.NodeCanvas.Children.Add node |> ignore)
 
 let new_node (window : MainWindow) (undo_record : UndoRecorder) : NodeUI =
     let node = NodeUI()
