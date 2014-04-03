@@ -103,11 +103,10 @@ type UndoRecorder() =
                         | Original(b) ->
                             let old_state = !state
                             let new_state = state_updater old_state b
-                            let rec_command = 
-                                { redo_comm=(fun () -> recorder <| UndoRedo(new_state))
-                                  undo_comm=(fun () -> recorder <| UndoRedo(old_state))
-                                  info = description }
-                            record rec_command
+                            record { 
+                                redo_comm=(fun () -> recorder <| UndoRedo(new_state));
+                                undo_comm=(fun () -> recorder <| UndoRedo(old_state));
+                                info = description }
                             observer.OnNext new_state
                             state := new_state
                         | UndoRedo(new_state) ->
