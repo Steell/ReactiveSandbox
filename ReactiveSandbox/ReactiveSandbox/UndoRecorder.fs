@@ -98,8 +98,11 @@ type UndoRecorder() =
                 member self.Subscribe observer = 
 
                     let state = ref initial_state
-                    let rec recorder data =
-                        match data with
+                    let propagate new_state =
+                        state := new_state
+                        observer.OnNext new_state
+
+                    let rec recorder = function
                         | Original(b) ->
                             let old_state = !state
                             let new_state = state_updater old_state b
@@ -107,12 +110,10 @@ type UndoRecorder() =
                                 redo_comm=(fun () -> recorder <| UndoRedo(new_state));
                                 undo_comm=(fun () -> recorder <| UndoRedo(old_state));
                                 info = description }
-                            observer.OnNext new_state
-                            state := new_state
-                        | UndoRedo(new_state) ->
-                            observer.OnNext new_state
-                            state := new_state
-                
+                            propagate new_state
+
+                        | UndoRedo(new_state) -> propagate new_state
+
                     obs |> Observable.subscribe (Original >> recorder) }
 
     /// Records all data coming from the given Observable for undo/redo. Undoing or redoing
