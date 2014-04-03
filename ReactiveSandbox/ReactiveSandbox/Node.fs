@@ -41,7 +41,7 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
 
     let move_node_action position () = update_pos position
 
-    let move_node_command origin position = { redo=position; undo=origin }
+    //let move_node_command origin position = { redo=position; undo=origin }
 
     let get_current_position() =
         new Point(Canvas.GetLeft node.Root, Canvas.GetTop node.Root)
@@ -61,7 +61,7 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
                 | _ -> None)
     
     drag_command_stream
-    |> undo_record.Record (get_current_position())
+    |> undo_record.RecordStreamState "Moved node" (get_current_position())
     |> Observable.subscribe update_pos
     |> ignore
 
@@ -102,16 +102,16 @@ let initialize_color_change (node : NodeUI) (undo_recorder : UndoRecorder) =
         Async.StartImmediate text_update
 
     Observable.merge node_click menu_click
-    |> undo_recorder.RecordScanAccum (false, false)
+    |> undo_recorder.RecordStreamAndScanAccum "Changed Color" (false, false)
     |> Observable.subscribe hello
 
 let initialize_deletion (node : NodeUI) (window : MainWindow) (undo_record : UndoRecorder) =
     node.DeleteMenu.Click 
-    |> Observable.map (
-        fun _ -> 
-            { redo=fun () -> window.NodeCanvas.Children.Remove node.Root; 
-              undo=fun () -> (window.NodeCanvas.Children.Add node.Root |> ignore) })
-    |> undo_record.RecordAndSubscribe
+    |> Observable.map (fun _ -> node.Root)
+    |> undo_record.RecordStream "Delete Node"
+    |> Observable.subscribe (function
+        | Redo(node) -> window.NodeCanvas.Children.Remove node
+        | Undo(node) -> window.NodeCanvas.Children.Add node |> ignore)
 
 let new_node (window : MainWindow) (undo_record : UndoRecorder) (position : Point) : UIElement =
     let node = NodeUI()
