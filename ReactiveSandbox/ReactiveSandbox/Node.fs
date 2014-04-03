@@ -41,7 +41,7 @@ let initialize_rect_drag (node : NodeUI) (window : MainWindow) (undo_record : Un
 
     let move_node_action position () = update_pos position
 
-    let move_node_command origin position = { redo=position; undo=origin}
+    let move_node_command origin position = { redo=position; undo=origin }
 
     let get_current_position() =
         new Point(Canvas.GetLeft node.Root, Canvas.GetTop node.Root)
