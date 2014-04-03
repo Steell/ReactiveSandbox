@@ -48,11 +48,10 @@ type UndoRecorder() =
 
     /// Records an Entry (does not actually perform it until undo/redo occurs)
     member x.Record (command : Entry<unit -> unit, unit -> unit>) : unit =
-        let rec_command = 
-            { redo_comm=command.redo;
-              undo_comm=command.undo;
-              info=command.description }
-        record rec_command
+        record { 
+            redo_comm=command.redo;
+            undo_comm=command.undo;
+            info=command.description }
        
     /// Creates a new Observable out of an Observable of Entrys. As Entrys come in via
     /// the original Observable, they are recorded for undo/redo and the redo Action is
@@ -62,12 +61,11 @@ type UndoRecorder() =
         { new IObservable<Update<'a, 'b>> with
             member self.Subscribe observer = 
 
-                let recorder data =
-                    let rec_command = 
-                        { redo_comm=(fun () -> observer.OnNext <| Redo(data.redo))
-                          undo_comm=(fun () -> observer.OnNext <| Undo(data.undo))
-                          info=data.description }
-                    record rec_command
+                let recorder data =                        
+                    record { 
+                        redo_comm=(fun () -> observer.OnNext <| Redo(data.redo));
+                        undo_comm=(fun () -> observer.OnNext <| Undo(data.undo));
+                        info=data.description }
                     observer.OnNext <| Redo(data.redo)
 
                 obs |> Observable.subscribe recorder }
@@ -79,11 +77,10 @@ type UndoRecorder() =
             member self.Subscribe observer = 
 
                 let recorder data =
-                    let rec_command = 
-                        { redo_comm=(fun () -> observer.OnNext <| Redo(data))
-                          undo_comm=(fun () -> observer.OnNext <| Undo(data))
-                          info=description }
-                    record rec_command
+                    record { 
+                        redo_comm=(fun () -> observer.OnNext <| Redo(data));
+                        undo_comm=(fun () -> observer.OnNext <| Undo(data));
+                        info=description }
                     observer.OnNext <| Redo(data)
 
                 obs |> Observable.subscribe recorder }
