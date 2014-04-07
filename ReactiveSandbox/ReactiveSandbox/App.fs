@@ -9,6 +9,7 @@ open FSharp.Control
 
 open XamlTypes
 open UndoRecorder
+open Node
 
 type NewNodeCommand = SetPosition of Point | CreateNode    
 
