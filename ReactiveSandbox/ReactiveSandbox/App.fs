@@ -52,6 +52,7 @@ type MainWindowViewModel(undo_recorder: UndoRecorder, drag_root: IInputElement) 
 
     let contents = new ObservableCollection<MainWindowContentContainer>()
 
+
     let initialize_drag (node : MainWindowContentContainer) (position : Point) =
     
         let update_pos (position : Point) =
@@ -114,6 +115,7 @@ type MainWindowViewModel(undo_recorder: UndoRecorder, drag_root: IInputElement) 
 
         IDisposable.merge drag_command_handler continuous_drag_handler
 
+
     let initialize_deletion (d: IDeletable) (node : MainWindowContentContainer) =
         d.DeleteEvent
             |> Observable.map (fun _ -> node)
@@ -121,6 +123,7 @@ type MainWindowViewModel(undo_recorder: UndoRecorder, drag_root: IInputElement) 
             |> Observable.subscribe (function
                 | Redo(node) -> contents.Remove node |> ignore
                 | Undo(node) -> contents.Add node)
+
 
     let new_node_handler =
         let new_pos_updater =
