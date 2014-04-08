@@ -1,17 +1,47 @@
-﻿<Window
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:RxSandbox"
+        xmlns:i="clr-namespace:System.Windows.Interactivity;assembly=System.Windows.Interactivity"
+        xmlns:cmd="clr-namespace:GalaSoft.MvvmLight.Command;assembly=GalaSoft.MvvmLight.Extras.WPF45"
         Title="Sandbox" Height="450" Width="500">
 
-    <Canvas Name="NodeCanvas" Background="White" Focusable="True">
-        <Canvas.ContextMenu>
-            <ContextMenu>
-                <MenuItem Name="NewNodeMenuItem" Header="New Node" />
-                <Separator />
-                <MenuItem Name="UndoMenuItem" Header="Undo" />
-                <MenuItem Name="RedoMenuItem" Header="Redo" />
-            </ContextMenu>
-        </Canvas.ContextMenu>
-    </Canvas>
+    <ItemsControl ItemsSource="{Binding Contents}">
+        <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+                <Canvas Name="DragCanvas" Background="White" Focusable="True">
+                    <i:Interaction.Triggers>
+                        <i:EventTrigger EventName="ContextMenuOpening">
+                            <cmd:EventToCommand Command="{Binding SetNewNodePos}" PassEventArgsToCommand="true" />
+                        </i:EventTrigger>
+                        <i:EventTrigger EventName="PreviewMouseMove">
+                            <cmd:EventToCommand Command="{Binding MouseMove}" PassEventArgsToCommand="true" />
+                        </i:EventTrigger>
+                        <i:EventTrigger EventName="MouseUp">
+                            <cmd:EventToCommand Command="{Binding MouseUp}" PassEventArgsToCommand="true" />
+                        </i:EventTrigger>
+                    </i:Interaction.Triggers>
+                    <Canvas.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Command="{Binding NewNode}" Header="New Node" />
+                            <Separator />
+                            <MenuItem Command="{Binding Undo}" Header="Undo" />
+                            <MenuItem Command="{Binding Redo}" Header="Redo" />
+                        </ContextMenu>
+                    </Canvas.ContextMenu>
+                </Canvas>
+            </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+            <DataTemplate>
+                <ContentControl Content="{Binding UIElement}" />
+            </DataTemplate>
+        </ItemsControl.ItemTemplate>
+        <ItemsControl.ItemContainerStyle>
+            <Style>
+                <Setter Property="Canvas.Left" Value="{Binding X, Mode=TwoWay}" />
+                <Setter Property="Canvas.Top" Value="{Binding Y, Mode=TwoWay}" />
+            </Style>
+        </ItemsControl.ItemContainerStyle>
+    </ItemsControl>
     
 </Window>

@@ -1,4 +1,4 @@
-﻿module XamlTypes
+﻿namespace RxSandbox.XamlTypes
 
 open FSharpx
 

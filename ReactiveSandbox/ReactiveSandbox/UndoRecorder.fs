@@ -1,4 +1,4 @@
-﻿module UndoRecorder
+﻿namespace RxSandbox.UndoRecorder
 
 open System
 open FSharp.Control

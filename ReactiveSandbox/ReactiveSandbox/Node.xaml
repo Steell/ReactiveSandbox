@@ -1,14 +1,19 @@
 ﻿<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:i="clr-namespace:System.Windows.Interactivity;assembly=System.Windows.Interactivity"
+        xmlns:cmd="clr-namespace:GalaSoft.MvvmLight.Command;assembly=GalaSoft.MvvmLight.Extras.WPF45"
+        xmlns:viewModel="clr-namespace:RxSandbox.Node"
         Name="NodeCanvas" Width="100" Height="100">
-    
-    <Rectangle Name="NodeRect" Stroke="Black" Fill="{Binding Color}" Cursor="Hand" RadiusX="10" RadiusY="10"
+
+    <Rectangle Stroke="Black" Fill="{Binding Color}" Cursor="Hand" RadiusX="10" RadiusY="10" ForceCursor="True"
                Width="{Binding Width, ElementName=NodeCanvas, Mode=OneWay}" 
                Height="{Binding Height, ElementName=NodeCanvas, Mode=OneWay}">
         <i:Interaction.Triggers>
             <i:EventTrigger EventName="ContextMenuOpening">
-                <i:InvokeCommandAction Command="{Binding MenuOpen}" />
+                <cmd:EventToCommand Command="{Binding MenuOpen}" PassEventArgsToCommand="true" />
+            </i:EventTrigger>
+            <i:EventTrigger EventName="MouseDown">
+                <cmd:EventToCommand Command="{Binding MouseDown}" PassEventArgsToCommand="true" />
             </i:EventTrigger>
         </i:Interaction.Triggers>
         <Rectangle.ContextMenu>

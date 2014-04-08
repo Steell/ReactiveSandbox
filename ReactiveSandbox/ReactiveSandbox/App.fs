@@ -1,121 +1,174 @@
-﻿module MainApp
+﻿namespace RxSandbox
 
 open System
+open System.Collections.ObjectModel
 open System.Windows
 open System.Windows.Controls
 open System.Windows.Input
 
 open FSharp.Control
 
-open XamlTypes
-open UndoRecorder
-open Node
+open RxSandbox.XamlTypes
+open RxSandbox.UndoRecorder
+open RxSandbox.Node
+open RxSandbox.Command
 
 type NewNodeCommand = SetPosition of Point | CreateNode    
 
 type DragCommand = Start | Stop
 
-let initialize_drag (node : NodeUI) (window : MainWindow) (undo_record : UndoRecorder) (position : Point) =
+type MainWindowContentContainer(element, position: Point) =
+    inherit Microsoft.Practices.Prism.ViewModel.NotificationObject()
+
+    let mutable x = position.X
+    let mutable y = position.Y
+
+    //TODO: Reference a ViewModel, not a UIElement. 
+    //      This will require a change to the XAML as well (DataTemplate?)
+    member self.UIElement : UIElement = element
+
+    member self.MouseDownEvent = element.MouseDown
+    member self.MouseUpEvent = element.MouseUp
     
-    let update_pos (position : Point) =
-        Canvas.SetLeft(node.Root, position.X)
-        Canvas.SetTop(node.Root, position.Y)
+    member self.X
+        with get() = x
+        and set newX = 
+            x <- newX
+            self.RaisePropertyChanged("X")
 
-    update_pos position
+    member self.Y
+        with get() = y
+        and set newY = 
+            y <- newY
+            self.RaisePropertyChanged("Y")
+
+
+type MainWindowViewModel(undo_recorder: UndoRecorder, drag_root: IInputElement) =
     
-    // produces a world updater for when the mouse moves
-    let move_update =
-        window.NodeCanvas.MouseMove
-            |> Observable.choose (
-                fun args -> 
-                    if args.LeftButton = MouseButtonState.Pressed 
-                    then Some(args.GetPosition window.Root) 
-                    else None)
+    let new_node_event = new Event<_>()
+    let new_node_pos_event = new Event<ContextMenuEventArgs>()
+    let mouse_move_event = new Event<MouseEventArgs>()
+    let mouse_up_event = new Event<MouseButtonEventArgs>()
 
-    let start_update = 
-        node.NodeRect.MouseDown
-            |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
-            |> Observable.map    (fun args -> Some(args.GetPosition node.NodeRect))
-    let stop_update =
-        Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
-            |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
-            |> Observable.map    (fun _ -> None)
+    let contents = new ObservableCollection<MainWindowContentContainer>()
 
-    // produces a world updater for drag flag when mouse is pressed
-    let start_stop_update = Observable.merge start_update stop_update
-
-    let move_node_action position () = update_pos position
-
-    let get_current_position() =
-        new Point(Canvas.GetLeft node.Root, Canvas.GetTop node.Root)
-
-    let drag_command_stream = 
-        node.NodeRect.MouseDown
-            |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
-            |> Observable.map    (fun args -> Start)
-            |> Observable.merge (
-                Observable.merge node.NodeRect.MouseUp window.NodeCanvas.MouseUp
-                    |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
-                    |> Observable.map    (fun _ -> Stop))
-            |> Observable.pairwise
-            |> Observable.choose (
-                function 
-                    | Start, Stop -> Some(get_current_position())
-                    | _ -> None)
+    let initialize_drag (node : MainWindowContentContainer) (position : Point) =
     
-    let drag_command_handler =
-        drag_command_stream
-            |> undo_record.RecordStreamState "Moved node" (get_current_position())
-            |> Observable.subscribe update_pos
+        let update_pos (position : Point) =
+            node.X <- position.X
+            node.Y <- position.Y
 
-    let continuous_drag_handler =
-        Observable.combineLatest start_stop_update move_update
-            |> Observable.choose    (function Some(offset), position -> Some(position - offset) | _ -> None)
-            |> Observable.subscribe (
-                // update rectangle position
-                fun new_position -> 
-                    Canvas.SetLeft(node.Root, new_position.X)
-                    Canvas.SetTop(node.Root, new_position.Y))
-
-    IDisposable.merge drag_command_handler continuous_drag_handler
-
-let loadWindow() =
-    let window = MainWindow()
-    let undo_recorder = new UndoRecorder()
+        let get_current_position() =
+            new Point(node.X, node.Y)
     
-    let undo_handler =
-        window.UndoMenuItem.Click
-            |> Observable.subscribe (fun _ -> undo_recorder.PerformUndo())
+        // produces a world updater for when the mouse moves
+        let move_update =
+            mouse_move_event.Publish
+                |> Observable.choose (
+                    fun args -> 
+                        if args.LeftButton = MouseButtonState.Pressed 
+                        then Some(args.GetPosition drag_root)
+                        else None)
+
+        let start_update = 
+            node.MouseDownEvent
+                |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
+                |> Observable.map    (fun args -> Some(args.GetPosition (args.OriginalSource :?> IInputElement)))
+        let stop_update =
+            Observable.merge node.MouseUpEvent mouse_up_event.Publish
+                |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
+                |> Observable.map    (fun _ -> None)
+
+        // produces a world updater for drag flag when mouse is pressed
+        let start_stop_update = Observable.merge start_update stop_update
+
+        let move_node_action position () = update_pos position
+        
+        let drag_command_stream = 
+            node.MouseDownEvent
+                |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
+                |> Observable.map    (fun args -> Start)
+                |> Observable.merge (
+                    Observable.merge node.MouseUpEvent mouse_up_event.Publish
+                        |> Observable.filter (fun args -> args.ChangedButton = MouseButton.Left)
+                        |> Observable.map    (fun _ -> Stop))
+                |> Observable.pairwise
+                |> Observable.choose (
+                    function 
+                        | Start, Stop -> Some(get_current_position())
+                        | _ -> None)
     
-    let redo_handler =
-        window.RedoMenuItem.Click
-            |> Observable.subscribe (fun _ -> undo_recorder.PerformRedo())
+        let drag_command_handler =
+            drag_command_stream
+                |> undo_recorder.RecordStreamState "Moved node" (get_current_position())
+                |> Observable.subscribe update_pos
 
-    let new_pos_updater =
-        window.NodeCanvas.ContextMenuOpening
-            |> Observable.map (fun args -> SetPosition(new Point(args.CursorLeft, args.CursorTop)))
+        let continuous_drag_handler =
+            Observable.combineLatest start_stop_update move_update
+                |> Observable.choose    (function Some(offset), position -> Some(position - offset) | _ -> None)
+                |> Observable.subscribe (
+                    // update rectangle position
+                    fun new_position -> 
+                        node.X <- new_position.X
+                        node.Y <- new_position.Y)
 
-    let creation_updater =
-        window.NewNodeMenuItem.Click
-            |> Observable.map (fun _ -> CreateNode)
+        IDisposable.merge drag_command_handler continuous_drag_handler
 
-    let make_node (position : Point) =
-        let node = Node.new_node window undo_recorder
-        initialize_drag node window undo_recorder position |> ignore
-        node
+    let initialize_deletion (d: IDeletable) (node : MainWindowContentContainer) =
+        d.DeleteEvent
+            |> Observable.map (fun _ -> node)
+            |> undo_recorder.RecordStream "Delete Node"
+            |> Observable.subscribe (function
+                | Redo(node) -> contents.Remove node |> ignore
+                | Undo(node) -> contents.Add node)
 
-    let add_node = window.NodeCanvas.Children.Add >> ignore
-    let del_node = window.NodeCanvas.Children.Remove
+    let new_node_handler =
+        let new_pos_updater =
+            new_node_pos_event.Publish
+                |> Observable.map (fun args -> SetPosition(new Point(args.CursorLeft, args.CursorTop)))
 
-    let create_handler = 
+        let creation_updater =
+            new_node_event.Publish
+                |> Observable.map (fun _ -> CreateNode)
+
+        let make_node (position : Point) =
+            let node, vm = Node.new_node undo_recorder
+            let container = new MainWindowContentContainer(node.Root, position)
+            initialize_drag container position |> ignore
+            initialize_deletion (vm :> IDeletable) container |> ignore
+            container
+
+        let add_node = contents.Add
+        let del_node = contents.Remove >> ignore
+
         Observable.merge new_pos_updater creation_updater
             |> Observable.pairwise
             |> Observable.choose (function SetPosition(p), CreateNode -> Some(p) | _ -> None)
             |> Observable.map make_node
             |> undo_recorder.RecordStream "New Node"
-            |> Observable.subscribe (function Redo(node) -> add_node node.Root | Undo(node) -> del_node node.Root)
+            |> Observable.subscribe (function Redo(node) -> add_node node | Undo(node) -> del_node node)
+        
 
-    window.Root
+    member vm.Contents : ObservableCollection<MainWindowContentContainer> = contents
 
-[<STAThread>]
-(new Application()).Run(loadWindow()) |> ignore
+    member vm.MouseUp = new FuncCommand(fun o -> o :?> MouseButtonEventArgs |> mouse_up_event.Trigger)
+    member vm.MouseMove = new FuncCommand(fun o -> o :?> MouseEventArgs |> mouse_move_event.Trigger)
+    member vm.NewNode = new FuncCommand(new_node_event.Trigger)
+    member vm.SetNewNodePos = new FuncCommand(fun o -> o :?> ContextMenuEventArgs |> new_node_pos_event.Trigger)
+    member vm.Undo = new FuncCommand(fun _ -> undo_recorder.PerformUndo())
+    member vm.Redo = new FuncCommand(fun _ -> undo_recorder.PerformRedo())
+
+
+module MainApp =
+
+    let loadWindow() =
+        let undo_recorder = new UndoRecorder()
+
+        let window = MainWindow()
+        window.Root.DataContext <- new MainWindowViewModel(undo_recorder, window.DragCanvas)
+
+        window.Root
+
+    [<STAThread; EntryPoint>]
+    let main _ =
+        (new Application()).Run(loadWindow())
