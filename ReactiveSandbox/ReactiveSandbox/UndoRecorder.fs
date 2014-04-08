@@ -48,10 +48,7 @@ type UndoRecorder() =
 
     /// Records an Entry (does not actually perform it until undo/redo occurs)
     member x.Record (command : Entry<unit -> unit, unit -> unit>) : unit =
-        record { 
-            redo_comm=command.redo;
-            undo_comm=command.undo;
-            info=command.description }
+        record { redo_comm=command.redo; undo_comm=command.undo; info=command.description }
        
     /// Creates a new Observable out of an Observable of Entrys. As Entrys come in via
     /// the original Observable, they are recorded for undo/redo and the redo Action is
