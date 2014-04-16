@@ -7,9 +7,83 @@ type Event<'a> = Next of (unit -> 'a) | End
 type SinkResult = More | NoMore
 type Sink<'a> = Event<'a> -> SinkResult
 
-type Observable<'a> =
-    abstract OnValue : ('a -> unit) -> IDisposable
-    abstract OnEnd : (unit -> unit) -> IDisposable
+type Subscription<'a>(sink : Sink<'a>) =
+    member this.sink = sink
+
+type UpdateBarrier() = 
+    
+    let mutable rootEvent = None
+    let mutable waiters = []
+    let mutable afters = []
+    let afterTransaction f = if rootEvent.IsSome then afters <- List.concat [afters; [f]] else f()
+    let independent waiter = not <| List.exists (fun other -> waiter.obs.dependsOn other.obs) waiters
+    let findIndependent () =
+        while not <| independent waiters.[0] do
+            waiters <- List.concat [waiters.Tail; [waiters.Head]]
+        let tmp = waiters.Head
+        waiters <- waiters.Tail
+        tmp
+    let flush () =
+        while not waiters.IsEmpty do
+            findIndependent().f()
+
+    static member Instance = new UpdateBarrier()
+
+    member this.whenDoneWith (obs: Observable<_>) (f: (unit -> unit)) : unit =
+        if rootEvent.IsSome
+        then waiters <- List.concat [waiters; [{obs=obs; f=f}]]
+        else f()
+
+    member this.inTransaction (event: Event<_>) (f: ('a -> 'b)) (arg: 'a) : 'b option = 
+        let mutable result = None
+        if rootEvent.IsSome
+        then Some(f arg)
+        else
+            rootEvent <- Some(event)
+            try
+                result <- Some(f arg)
+                flush()
+            finally
+                rootEvent <- None
+                while not afters.IsEmpty do
+                    afters.Head()
+                    afters <- afters.Tail
+            result
+
+    member this.currentEventId () : obj option = 
+        if rootEvent.IsSome then Some(rootEvent.Value.id) else None
+
+    member this.wrappedSubscribe (obs: Observable<'a>) (sink: Sink<'a>) () : unit -> unit = 
+        let unsubd = ref false
+        let doUnsub = ref (fun () -> ())
+        let unsub () =
+            unsubd := true
+            (!doUnsub)()
+        if not !unsubd
+        then
+            doUnsub := obs.subscribeInternal (
+                fun event -> 
+                    afterTransaction (
+                        fun () -> 
+                            if not subsubd
+                            then
+                                if sink event = NoMore then unsub()))
+        unsub
+
+and Observable<'a>() =
+    
+    member this.OnValue (handler: ('a -> unit)) : IDisposable =
+        let subscriber : Event<'a> -> unit = function
+            | Next(value) -> handler <| value()
+            | _ -> ()
+        this.Subscribe subscriber
+
+    member this.OnEnd (handler: (unit -> unit)) : IDisposable =
+        let subscriber : Event<'a> -> unit = function
+            | End -> handler()
+            | _ -> ()
+        this.Subscribe subscriber
+
     abstract Map : ('a -> 'b) -> Observable<'b>
     abstract MapEnd : (unit -> 'a) -> Observable<'a>
     abstract Filter : ('a -> bool) -> Observable<'a>
@@ -37,6 +111,8 @@ type Observable<'a> =
     abstract WithStateMachine : 'b -> ('b -> Event<'a> -> 'b * Event<'c> list) -> Observable<'c>
     abstract Split : ('a -> Choice<'b, 'c>) -> Observable<'b> * Observable<'c>
     abstract Awaiting : Observable<_> -> Observable<bool>
+
+    abstract Subscribe : (Event<'a> -> unit) -> IDisposable
     //abstract WithHandler 
 
 
@@ -126,9 +202,138 @@ and EventStream<'a>(subscribe: Event<'a> -> unit) =
 
     member this.ToPropertyWithInitialValue (initialValue: 'a) : Property<'a> =
         failwith "Not Implemented"
+
+and Dispatcher<'a>(subscribe, ?handleEvent) as this =
+    let mutable subscriptions : Subscription<'a> list = []
+    let mutable queue : Event<'a> list = []
+    let mutable ended = false
+    let mutable pushing = false
+    let mutable unsubscribeFromSource = fun () -> ()
+    let removeSub subscription = 
+        subscriptions <- List.filter ((=) subscription >> not) subscriptions
+    let mutable waiters = None
+    let done' () =
+        if waiters.IsSome
+        then
+            for w in waiters.Value do w()
+            waiters <- None
+    let pushIt event =
+        if not pushing
+        then
+            let mutable success = false
+            try
+                pushing <- true
+                let tmp = subscriptions
+                for sub in tmp do
+                    match sub.sink event with
+                    | NoMore -> removeSub sub
+                    | _ -> 
+                        match event with
+                        | End -> removeSub sub
+                        | _ -> ()
+                success <- true
+            finally
+                pushing <- false
+                queue <- if success then [] else queue
+            success <- true
+            while not queue.IsEmpty do
+                let event = List.head queue
+                queue <- List.tail queue
+                this.Push event
+            done'()
+            if this.HasSubscribers
+            then NoMore
+            else
+                unsubscribeFromSource()
+                NoMore
+        else
+            queue <- List.concat [ queue; [event] ]
+            More
+
+    let handleEvent' = if handleEvent.IsSome then handleEvent.Value else this.Push
+
+    abstract Push : Event<'a> -> unit
+    default this.Push event = UpdateBarrier.Instance.inTransaction event this pushIt [event]
     
+    member this.HasSubscribers with get() = List.length subscriptions > 0
+    
+    member this.Ended 
+        with get() = ended 
+        and set value = ended <- value
+    
+    member this.HandleEvent event =
+        match event with
+        | End -> this.Ended <- true
+        | _ -> ()
+        handleEvent' event
+
+    abstract Subscribe : Sink<'a> -> IDisposable
+    default this.Subscribe (sink : Sink<'a>) =
+        if this.Ended
+        then
+            sink End |> ignore
+            { new IDisposable with member x.Dispose() = () }
+        else
+            let subscription = new Subscription<'a>(sink)
+            subscriptions <- List.concat [subscriptions; [subscription]]
+            if subscriptions.Length = 1
+            then
+                let unsubSrc = subscribe this.HandleEvent
+                unsubscribeFromSource <- 
+                    fun () ->
+                        unsubSrc()
+                        unsubscribeFromSource <- fun () -> ()
+            { new IDisposable with
+                member x.Dispose () =
+                    removeSub subscription
+                    if not this.HasSubscribers then unsubscribeFromSource() }
+
+type PropertyDispatcher<'a>(p, subscribe, handleEvent) as this =
+    inherit Dispatcher<'a>(subscribe, handleEvent)
+
+    let mutable current = None
+    let mutable currentValueRootId = None
+    let mutable push = this.Push
+    let mutable subscrive = this.Subscribe
+    
+    override this.Push event =
+        match event with
+        | End -> this.Ended <- true
+        | Next(value) -> 
+            current <- Some(event)
+            currentValueRootId <- UpdateBarrier.Instance.currentEventId()
+        base.Push event
+
+    override this.Subscribe sink =
+        let mutable initSent = false
+        let reply = ref More
+
+        let maybeSubSource () =
+            if !reply = NoMore
+            then { new IDisposable with member x.Dispose() = () }
+            elif this.Ended
+            then
+                sink End |> ignore
+                { new IDisposable with member x.Dispose() = () }
+            else
+                base.Subscribe sink
+
+        if current.IsSome && (this.HasSubscribers || this.Ended)
+        then
+            let dispatchingId = UpdateBarrier.Instance.currentEventId()
+            let valId = currentValueRootId
+            if not this.Ended && valId.IsSome && dispatchingId.IsSome && dispatchingId.Value <> valId.Value
+            then
+                UpdateBarrier.whenDoneWith p (fun () -> reply := sink <| Next(current.Value); !reply)
+                maybeSubSource()
+            else
+                UpdateBarrier.inTransaction None this (fun () -> reply := sink <| Next(current.Value); !reply) []
+                maybeSubSource()
+        else
+            maybeSubSource()
+
 type Bus<'a>() = 
     member this.x = ()
 
-module Observable =
+module Bacon =
     let not (observable: Observable<bool>) : Observable<bool> = failwith "Not Implemented"
