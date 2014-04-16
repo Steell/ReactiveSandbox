@@ -8,7 +8,7 @@ type Entry<'a, 'b> = { redo: 'a; undo: 'b; description: string }
 type Update<'a, 'b> = Redo of 'a | Undo of 'b
 
 type private RecorderAction = unit -> unit
-type private RecorderCommand  = { redo_comm: RecorderAction; undo_comm: RecorderAction; info: string }
+type private RecorderCommand = { redo_comm: RecorderAction; undo_comm: RecorderAction; info: string }
 
 type private CommandStack = RecorderCommand list
 type private RecorderState = { undo_stack: CommandStack; redo_stack: CommandStack }
@@ -25,8 +25,8 @@ type UndoRecorder() =
         undo_stack <- command::undo_stack
         redo_stack <- []
         
-    member x.UndoStack = undo_stack |> List.map (fun c -> c.info)
-    member x.RedoStack = redo_stack |> List.map (fun c -> c.info)
+    member x.UndoStack with get() = undo_stack |> List.map (fun c -> c.info)
+    member x.RedoStack with get() = redo_stack |> List.map (fun c -> c.info)
 
     /// Perfoms an Undo operation
     member x.PerformUndo() =
