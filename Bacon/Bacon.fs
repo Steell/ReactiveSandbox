@@ -1,339 +1,376 @@
 ﻿namespace Bacon
 
+#nowarn "40"
+
 open System
+open System.Diagnostics
 
-type Event<'a> = Next of (unit -> 'a) | End
+open FSharp.Control
 
-type SinkResult = More | NoMore
-type Sink<'a> = Event<'a> -> SinkResult
-
-type Subscription<'a>(sink : Sink<'a>) =
-    member this.sink = sink
-
-type UpdateBarrier() = 
+type KeySource() =
     
-    let mutable rootEvent = None
-    let mutable waiters = []
-    let mutable afters = []
-    let afterTransaction f = if rootEvent.IsSome then afters <- List.concat [afters; [f]] else f()
-    let independent waiter = not <| List.exists (fun other -> waiter.obs.dependsOn other.obs) waiters
-    let findIndependent () =
-        while not <| independent waiters.[0] do
-            waiters <- List.concat [waiters.Tail; [waiters.Head]]
-        let tmp = waiters.Head
-        waiters <- waiters.Tail
-        tmp
-    let flush () =
-        while not waiters.IsEmpty do
-            findIndependent().f()
+    let mutable key = 0
 
-    static member Instance = new UpdateBarrier()
+    let mutable queue = []
 
-    member this.whenDoneWith (obs: Observable<_>) (f: (unit -> unit)) : unit =
-        if rootEvent.IsSome
-        then waiters <- List.concat [waiters; [{obs=obs; f=f}]]
-        else f()
+    member this.GetKey() =
+        match queue with
+        | h::t ->
+            queue <- t
+            h
+        | [] ->
+            let tmp = key
+            key <- key + 1
+            tmp
 
-    member this.inTransaction (event: Event<_>) (f: ('a -> 'b)) (arg: 'a) : 'b option = 
-        let mutable result = None
-        if rootEvent.IsSome
-        then Some(f arg)
-        else
-            rootEvent <- Some(event)
-            try
-                result <- Some(f arg)
-                flush()
-            finally
-                rootEvent <- None
-                while not afters.IsEmpty do
-                    afters.Head()
-                    afters <- afters.Tail
-            result
+    member this.FreeKey k = queue <- k::queue
 
-    member this.currentEventId () : obj option = 
-        if rootEvent.IsSome then Some(rootEvent.Value.id) else None
+    member this.Reset() =
+        key <- 0
+        queue <- []
 
-    member this.wrappedSubscribe (obs: Observable<'a>) (sink: Sink<'a>) () : unit -> unit = 
-        let unsubd = ref false
-        let doUnsub = ref (fun () -> ())
-        let unsub () =
-            unsubd := true
-            (!doUnsub)()
-        if not !unsubd
-        then
-            doUnsub := obs.subscribeInternal (
-                fun event -> 
-                    afterTransaction (
-                        fun () -> 
-                            if not subsubd
-                            then
-                                if sink event = NoMore then unsub()))
-        unsub
+type Stream<'a> =
+    inherit IObservable<'a>
+    inherit IDisposable
 
-and Observable<'a>() =
+// Represents a stream of IObserver events. 
+type ObservableSource<'a>() =
+
+    let protect function1 =
+        let mutable ok = false 
+        try 
+            function1()
+            ok <- true 
+        finally
+            Debug.Assert(ok, "IObserver method threw an exception.")
+
+    let keys = new KeySource()
+
+    // Use a Map, not a Dictionary, because callers might unsubscribe in the OnNext 
+    // method, so thread-safe snapshots of subscribers to iterate over are needed. 
+    let mutable subscriptions = Map.empty : Map<int, IObserver<'a>>
+
+    let processSubs f = subscriptions |> Map.iter (fun _ value -> protect (fun () -> f value))
+    let next(obs) = processSubs <| fun value -> value.OnNext obs
+    let completed() = processSubs <| fun value -> value.OnCompleted()
+    let error(err) = processSubs <| fun value -> value.OnError err
+
+    let thisLock = new obj()
     
-    member this.OnValue (handler: ('a -> unit)) : IDisposable =
-        let subscriber : Event<'a> -> unit = function
-            | Next(value) -> handler <| value()
-            | _ -> ()
-        this.Subscribe subscriber
+    let mutable finished = false 
+    let mutable disposed = false
 
-    member this.OnEnd (handler: (unit -> unit)) : IDisposable =
-        let subscriber : Event<'a> -> unit = function
-            | End -> handler()
-            | _ -> ()
-        this.Subscribe subscriber
+    member private this.Disposed with get() = disposed
 
-    abstract Map : ('a -> 'b) -> Observable<'b>
-    abstract MapEnd : (unit -> 'a) -> Observable<'a>
-    abstract Filter : ('a -> bool) -> Observable<'a>
-    abstract FilterByProperty : Property<'a> -> Observable<'a>
-    abstract TakeWhile : ('a -> bool) -> Observable<'a>
-    abstract TakeWhileByProperty : Property<bool> -> Observable<'a>
-    abstract Take : int -> Observable<'a>
-    abstract TakeUntil : Observable<_> -> Observable<'a>
-    abstract Skip : int -> Observable<'a>
-    abstract SkipDuplicates : ('a -> 'a -> bool) -> EventStream<'a>
-    abstract Delay : TimeSpan -> Observable<'a>
-    abstract Throttle : TimeSpan -> Observable<'a>
-    abstract Debounce : TimeSpan -> Observable<'a>
-    abstract DebounceImmediate : TimeSpan -> Observable<'a>
-    abstract DoAction : ('a -> unit) -> Observable<'a>
-    abstract FlatMap : ('a -> Observable<'a>) -> EventStream<'a>
-    abstract FlatMapLatest : ('a -> Observable<'a>) -> EventStream<'a>
-    abstract FlatMapFirst : ('a -> Observable<'a>) -> EventStream<'a>
-    abstract Scan : 'b -> ('b -> 'a -> 'b) -> Property<'b>
-    abstract Reduce : 'b -> ('b -> 'a -> 'b) -> Property<'b>
-    abstract Diff : 'a -> ('a -> 'a -> 'b) -> Property<'b>
-    abstract Zip : Observable<'b> -> ('a -> 'b -> 'c) -> Observable<'c>
-    abstract SlidingWindow : int -> int -> Observable<'a list>
-    abstract Combine : Observable<'b> -> ('a -> 'b -> 'c) -> Observable<'c>
-    abstract WithStateMachine : 'b -> ('b -> Event<'a> -> 'b * Event<'c> list) -> Observable<'c>
-    abstract Split : ('a -> Choice<'b, 'c>) -> Observable<'b> * Observable<'c>
-    abstract Awaiting : Observable<_> -> Observable<bool>
+    // The source ought to call these methods in serialized fashion (from 
+    // any thread, but serialized and non-reentrant). 
+    member this.Next(obs) =
+        Debug.Assert(not finished, "IObserver is already finished")
+        next obs
 
-    abstract Subscribe : (Event<'a> -> unit) -> IDisposable
-    //abstract WithHandler 
+    member this.Completed() =
+        Debug.Assert(not finished, "IObserver is already finished")
+        finished <- true
+        completed()
+
+    member this.Error(err) =
+        Debug.Assert(not finished, "IObserver is already finished")
+        finished <- true
+        error err
+
+    // The IObservable object returned is thread-safe; you can subscribe  
+    // and unsubscribe (Dispose) concurrently. 
+    member this.AsObservable = this :> IObservable<'a>
+
+    abstract DisposeInternal : unit -> unit
+    default this.DisposeInternal() = 
+        disposed <- true
+        subscriptions <- Map.empty
+
+    abstract OnSubscribed : IObserver<'a> -> unit
+    default this.OnSubscribed _ = ()
+
+    interface Stream<'a> with
+        member this.Subscribe obs =
+            let key1 =
+                lock thisLock (fun () ->
+                    let key1 = keys.GetKey()
+                    subscriptions <- subscriptions.Add(key1, obs)
+                    this.OnSubscribed obs
+                    key1)
+            { new IDisposable with  
+                member this.Dispose() = 
+                    lock thisLock (fun () -> 
+                        subscriptions <- subscriptions.Remove(key1)
+                        keys.FreeKey key1) }
+        member this.Dispose() = this.DisposeInternal()
 
 
-and Property<'a>(initial: 'a) =
+type Property<'a>(?initial: 'a) =
     
+    let mutable currentValue = initial
+
+    let propertySource = new ObservableSource<'a>()
+
     static member Constant x = failwith "Not Implemented"
     
-    member this.Changes : EventStream<'a> = failwith "Not Implemented"
-    member this.ToEventStream () : EventStream<'a> = failwith "Not Implemented"
+    member this.Changes : Stream<'a> = (propertySource :> Stream<'a>)
     
-    member this.SampledByStream (stream: EventStream<_>) : EventStream<'a> = failwith "Not Implemented"
-    member this.SampledByProperty (property: Property<_>) : Property<'a> = failwith "Not Implemented"
-    member this.SampledByObservable (observable: Observable<'b>) (f: 'a -> 'b -> 'c) : EventStream<'c> = failwith "Not Implemented"
+    member this.SampledBy (observable: #IObservable<_>) : IObservable<'a> =
+        observable |> Observable.choose (fun _ -> currentValue)
 
-    member this.Subscribe (handler: Event<'a> -> unit) : IDisposable = failwith "Not Implemented"
-    member this.Sample (interval: TimeSpan) : EventStream<'a> = failwith "Not Implemented"
-    member this.SkipDuplicates (equalityTest: ('a -> 'a -> bool)) : EventStream<'a> = failwith "Not Implemented"
+    member this.SampledByAndCombinedWith (f: 'a -> 'b -> 'c) (observable: #IObservable<'b>) : IObservable<'c> = 
+        observable 
+            |> Observable.choose (
+                fun b -> 
+                    match currentValue with
+                    | Some(a) -> Some(f a b)
+                    | None -> None)
 
+    member this.Sample (interval: TimeSpan) : Stream<'a> = 
+        let token = new System.Threading.CancellationTokenSource()
+        let obs = 
+            { new ObservableSource<_>() with
+                member this.DisposeInternal() =
+                    token.Cancel()
+                    this.Completed()
+                    base.DisposeInternal() }
+        let loop = async {
+            while true do
+                do! Async.Sleep(interval.TotalMilliseconds |> int)
+                if currentValue.IsSome then obs.Next currentValue.Value
+        }
+        Async.StartImmediate(loop, token.Token)
+        obs :> Stream<'a>
 
-and EventStream<'a>(subscribe: Event<'a> -> unit) =
+    interface Stream<'a> with
+        member this.Subscribe obs = 
+            if currentValue.IsSome then obs.OnNext currentValue.Value
+            (propertySource :> Stream<'a>).Subscribe obs
 
-    static member Once x = failwith "Not Implemented"
-    static member Never () = failwith "Not Implemented"
-
-    static member FromBinder (binder: Sink<'a> -> IDisposable) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member FromObservable (observable: IObservable<'a>) : EventStream<'a> = 
-        failwith "Not Implemented"
-
-    static member FromCallback (f: ('a -> unit) -> unit) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member FromPoll (interval: TimeSpan) (f: TimeSpan -> 'a) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member Later (delay: int) (value: 'a) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member FromSeq (seq: 'a seq) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member Interval (interval: TimeSpan) (x: 'a) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member Sequentially (interval: TimeSpan) (seq: 'a seq) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    static member Repeatedly (interval: TimeSpan) (seq: 'a seq) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    member this.MapProperty (property: Property<'b>) : EventStream<'b> =
-        property.SampledByStream this
-
-    member this.Concat (otherStream: Observable<'a>) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    member this.Merge (otherStream: Observable<'a>) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    member this.StartWith (value: 'a) : EventStream<'a> =
-        EventStream<'a>.Once value |> this.Concat
-
-    member this.SkipWhile (predicate: 'a -> bool) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    member this.SkipWhileByProperty (property: Property<'a>) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    member this.SkipUntil (stream: EventStream<_>) : EventStream<'a> =
-        failwith "Not Implemented"
-
-    member this.BufferWithTime (delay: TimeSpan) : EventStream<'a list> =
-        failwith "Not Implemented"
-
-    member this.Buffer (defer: Action -> unit) : EventStream<'a list> =
-        failwith "Not Implemented"
-
-    member this.BufferWithCount (count: int) : EventStream<'a list> =
-        failwith "Not Implemented"
-
-    member this.BufferWithTimeOrCount (delay: TimeSpan) (count: int) : EventStream<'a list> =
-        failwith "Not Implemented"
-
-    member this.ToProperty () : Property<'a> =
-        failwith "Not Implemented"
-
-    member this.ToPropertyWithInitialValue (initialValue: 'a) : Property<'a> =
-        failwith "Not Implemented"
-
-and Dispatcher<'a>(subscribe, ?handleEvent) as this =
-    let mutable subscriptions : Subscription<'a> list = []
-    let mutable queue : Event<'a> list = []
-    let mutable ended = false
-    let mutable pushing = false
-    let mutable unsubscribeFromSource = fun () -> ()
-    let removeSub subscription = 
-        subscriptions <- List.filter ((=) subscription >> not) subscriptions
-    let mutable waiters = None
-    let done' () =
-        if waiters.IsSome
-        then
-            for w in waiters.Value do w()
-            waiters <- None
-    let pushIt event =
-        if not pushing
-        then
-            let mutable success = false
-            try
-                pushing <- true
-                let tmp = subscriptions
-                for sub in tmp do
-                    match sub.sink event with
-                    | NoMore -> removeSub sub
-                    | _ -> 
-                        match event with
-                        | End -> removeSub sub
-                        | _ -> ()
-                success <- true
-            finally
-                pushing <- false
-                queue <- if success then [] else queue
-            success <- true
-            while not queue.IsEmpty do
-                let event = List.head queue
-                queue <- List.tail queue
-                this.Push event
-            done'()
-            if this.HasSubscribers
-            then NoMore
-            else
-                unsubscribeFromSource()
-                NoMore
-        else
-            queue <- List.concat [ queue; [event] ]
-            More
-
-    let handleEvent' = if handleEvent.IsSome then handleEvent.Value else this.Push
-
-    abstract Push : Event<'a> -> unit
-    default this.Push event = UpdateBarrier.Instance.inTransaction event this pushIt [event]
-    
-    member this.HasSubscribers with get() = List.length subscriptions > 0
-    
-    member this.Ended 
-        with get() = ended 
-        and set value = ended <- value
-    
-    member this.HandleEvent event =
-        match event with
-        | End -> this.Ended <- true
-        | _ -> ()
-        handleEvent' event
-
-    abstract Subscribe : Sink<'a> -> IDisposable
-    default this.Subscribe (sink : Sink<'a>) =
-        if this.Ended
-        then
-            sink End |> ignore
-            { new IDisposable with member x.Dispose() = () }
-        else
-            let subscription = new Subscription<'a>(sink)
-            subscriptions <- List.concat [subscriptions; [subscription]]
-            if subscriptions.Length = 1
-            then
-                let unsubSrc = subscribe this.HandleEvent
-                unsubscribeFromSource <- 
-                    fun () ->
-                        unsubSrc()
-                        unsubscribeFromSource <- fun () -> ()
-            { new IDisposable with
-                member x.Dispose () =
-                    removeSub subscription
-                    if not this.HasSubscribers then unsubscribeFromSource() }
-
-type PropertyDispatcher<'a>(p, subscribe, handleEvent) as this =
-    inherit Dispatcher<'a>(subscribe, handleEvent)
-
-    let mutable current = None
-    let mutable currentValueRootId = None
-    let mutable push = this.Push
-    let mutable subscrive = this.Subscribe
-    
-    override this.Push event =
-        match event with
-        | End -> this.Ended <- true
-        | Next(value) -> 
-            current <- Some(event)
-            currentValueRootId <- UpdateBarrier.Instance.currentEventId()
-        base.Push event
-
-    override this.Subscribe sink =
-        let mutable initSent = false
-        let reply = ref More
-
-        let maybeSubSource () =
-            if !reply = NoMore
-            then { new IDisposable with member x.Dispose() = () }
-            elif this.Ended
-            then
-                sink End |> ignore
-                { new IDisposable with member x.Dispose() = () }
-            else
-                base.Subscribe sink
-
-        if current.IsSome && (this.HasSubscribers || this.Ended)
-        then
-            let dispatchingId = UpdateBarrier.Instance.currentEventId()
-            let valId = currentValueRootId
-            if not this.Ended && valId.IsSome && dispatchingId.IsSome && dispatchingId.Value <> valId.Value
-            then
-                UpdateBarrier.whenDoneWith p (fun () -> reply := sink <| Next(current.Value); !reply)
-                maybeSubSource()
-            else
-                UpdateBarrier.inTransaction None this (fun () -> reply := sink <| Next(current.Value); !reply) []
-                maybeSubSource()
-        else
-            maybeSubSource()
-
-type Bus<'a>() = 
-    member this.x = ()
-
+        member this.Dispose() = (propertySource :> Stream<'a>).Dispose()
+        
 module Bacon =
-    let not (observable: Observable<bool>) : Observable<bool> = failwith "Not Implemented"
+
+    let fromObservable (observable : #IObservable<'a>) : Stream<'a> =
+        let newObs : ObservableSource<_> option ref = ref None
+        let subscription =
+            observable.Subscribe
+                { new IObserver<'a> with
+                    member this.OnNext x = (!newObs).Value.Next x
+                    member this.OnError x = (!newObs).Value.Error x
+                    member this.OnCompleted() = (!newObs).Value.Completed() }
+        let result = 
+            { new ObservableSource<_>() with
+                member this.DisposeInternal() =
+                    subscription.Dispose()
+                    base.DisposeInternal() }
+        newObs := Some(result)
+        result :> Stream<'a>
+
+    let onValue (handler: 'a -> unit) (observable: #IObservable<'a>) : IDisposable = 
+        failwith "Not Implemented"
+
+    let onEnd (handler: unit -> unit) (observable: #IObservable<'a>) : IDisposable =  
+        failwith "Not Implemented"
+
+    let map (f: 'a -> 'b) (observable: #IObservable<'a>) : Stream<'b> =  
+        Observable.map f observable |> fromObservable
+
+    let mapEnd (f: unit -> 'a) (observable: #IObservable<'a>) : Stream<'a> =  
+        let mappedObs : ObservableSource<_> option ref = ref None
+        let mapSubscription =
+            observable.Subscribe
+                { new IObserver<'a> with
+                    member this.OnNext x = (!mappedObs).Value.Next x
+                    member this.OnError x = (!mappedObs).Value.Error x
+                    member this.OnCompleted() =
+                        let obs = (!mappedObs).Value
+                        obs.Next <| f()
+                        obs.Completed() }
+        let result = 
+            { new ObservableSource<_>() with
+                member this.DisposeInternal() =
+                    mapSubscription.Dispose()
+                    base.DisposeInternal() }
+        mappedObs := Some(result)
+        result :> Stream<'a>
+
+    let filter (predicate: 'a -> bool) (observable: #IObservable<'a>) : Stream<'a> =  
+        Observable.filter predicate observable |> fromObservable
+
+    let filterByProperty (property: Property<bool>) (observable: #IObservable<'a>) : Stream<'a> =  
+        Observable.combineLatest property observable
+            |> Observable.choose (fun (test, value) -> if test then Some(value) else None)
+            |> fromObservable
+
+    let takeWhile (predicate: 'a -> bool) (observable: #IObservable<'a>) : Stream<'a> =  
+        Observable.takeWhile predicate observable |> fromObservable
+
+    let takeWhileByProperty (property: Property<bool>) (observable: #IObservable<'a>) : Stream<'a> =  
+        Observable.combineLatest property observable
+            |> Observable.takeWhile (fun (test, _) -> test)
+            |> Observable.map (fun (_, value) -> value)
+            |> fromObservable
+
+    let take (n: int) (observable: #IObservable<'a>) : Stream<'a> =  
+        let counter = ref n
+        let newObs : ObservableSource<_> option ref = ref None
+        let rec subscription : IDisposable =
+            observable.Subscribe
+                { new IObserver<'a> with
+                    member this.OnNext x = 
+                        (!newObs).Value.Next x
+                        counter := !counter - 1
+                        if !counter = 0 then this.OnCompleted()
+                    member this.OnError x = (!newObs).Value.Error x
+                    member this.OnCompleted() = 
+                        (!newObs).Value.Completed()
+                        subscription.Dispose() }
+        let result = 
+            { new ObservableSource<_>() with
+                member this.DisposeInternal() =
+                    subscription.Dispose()
+                    base.DisposeInternal() }
+        newObs := Some(result)
+        result :> Stream<'a>
+
+    let takeUntil (stopper: IObservable<_>) (observable: #IObservable<'a>) : Stream<'a> =  
+        let takeStream = fromObservable observable
+        
+        let stopperSub =
+            stopper.Subscribe
+                { new IObserver<'a> with
+                    member this.OnNext x = takeStream.Dispose()
+                    member this.OnError err = takeStream.Error err
+                    member this.OnCompleted() = takeStream.OnCompleted() }
+
+    let skip : int -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let skipDuplicates : ('a -> 'a -> bool) -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let delay : TimeSpan -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let throttle : TimeSpan -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let debounce : TimeSpan -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let debounceImmediate : TimeSpan -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let doAction : ('a -> unit) -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let flatMap : ('a -> #IObservable<'a>) -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let flatMapLatest : ('a -> #IObservable<'a>) -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let flatMapFirst : ('a -> #IObservable<'a>) -> #IObservable<'a> -> IObservable<'a> =  
+        failwith "Not Implemented"
+
+    let scan : 'b -> ('b -> 'a -> 'b) -> #IObservable<'a> -> Property<'b> =  
+        failwith "Not Implemented"
+
+    let reduce : 'b -> ('b -> 'a -> 'b) -> #IObservable<'a> -> Property<'b> =  
+        failwith "Not Implemented"
+
+    let diff : 'a -> ('a -> 'a -> 'b) -> #IObservable<'a> -> Property<'b> =  
+        failwith "Not Implemented"
+
+    let zip : ('a -> 'b -> 'c) -> #IObservable<'a> -> #IObservable<'b> -> IObservable<'c> =  
+        failwith "Not Implemented"
+
+    let slidingWindow : int -> int -> #IObservable<'a> -> IObservable<'a list> =  
+        failwith "Not Implemented"
+
+    let combine : ('a -> 'b -> 'c) -> #IObservable<'a> -> #IObservable<'b> -> IObservable<'c> =  
+        failwith "Not Implemented"
+
+    let withStateMachine : 'b -> ('b -> Event<'a> -> 'b * Event<'c> list) -> IObservable<'c> =  
+        failwith "Not Implemented"
+
+    let split : ('a -> Choice<'b, 'c>) -> #IObservable<'a> -> IObservable<'b> * IObservable<'c> =  
+        failwith "Not Implemented"
+
+    let awaiting : #IObservable<_> -> #IObservable<'a> -> IObservable<bool> =  
+        failwith "Not Implemented"
+
+    let subscribe : (Event<'a> -> unit) -> #IObservable<'a> -> IDisposable =  
+        failwith "Not Implemented"
+    
+    let not (observable: #IObservable<bool>) : Stream<bool> = map not observable
+
+    let once x = failwith "Not Implemented"
+    let never () = failwith "Not Implemented"
+
+    let fromBinder (binder: IObserver<'a> -> IDisposable) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let fromCallback (f: ('a -> unit) -> unit) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let fromPoll (interval: TimeSpan) (f: TimeSpan -> 'a) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let fromSeq (seq: 'a seq) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let later (delay: TimeSpan) (value: 'a) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let interval (interval: TimeSpan) (x: 'a) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let sequentially (interval: TimeSpan) (seq: 'a seq) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let repeatedly (interval: TimeSpan) (seq: 'a seq) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let mapProperty (property: Property<'b>) (observable: #IObservable<_>) : Stream<'b> =
+        property.SampledBy observable |> fromObservable
+
+    let concat (obs1: #IObservable<'a>) (obs2: #IObservable<'a>) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let merge (obs1: #IObservable<'a>) (obs2: #IObservable<'a>) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let startWith (value: 'a) (observable: #IObservable<'a>) : IObservable<'a> =
+        concat (once value) observable
+
+    let skipWhile (predicate: 'a -> bool) (observable: #IObservable<'a>) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let skipWhileByProperty (property: Property<'a>) (observable: #IObservable<'a>) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let skipUntil (waitFor: IObservable<_>) (observable: #IObservable<'a>) : IObservable<'a> =
+        failwith "Not Implemented"
+
+    let bufferWithTime (delay: TimeSpan) (observable: #IObservable<'a>) : IObservable<'a list> =
+        failwith "Not Implemented"
+
+    let buffer (defer: Action -> unit) (observable: #IObservable<'a>) : IObservable<'a list> =
+        failwith "Not Implemented"
+
+    let bufferWithCount (count: int) (observable: #IObservable<'a>) : IObservable<'a list> =
+        failwith "Not Implemented"
+
+    let bufferWithTimeOrCount (delay: TimeSpan) (count: int) (observable: #IObservable<'a>) : IObservable<'a list> =
+        failwith "Not Implemented"
+
+    let toProperty (observable: #IObservable<'a>) : Property<'a> =
+        failwith "Not Implemented"
+
+    let toPropertyWithInitialValue (initialValue: 'a) (observable: #IObservable<'a>) : Property<'a> =
+        failwith "Not Implemented"
+
+    
