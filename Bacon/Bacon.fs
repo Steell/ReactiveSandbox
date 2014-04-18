@@ -51,9 +51,9 @@ type ObservableSource<'a>() =
     let mutable subscriptions = Map.empty : Map<int, IObserver<'a>>
 
     let processSubs f = subscriptions |> Map.iter (fun _ value -> protect (fun () -> f value))
-    let next(obs) = processSubs <| fun value -> value.OnNext obs
+    let next obs = processSubs <| fun value -> value.OnNext obs
     let completed() = processSubs <| fun value -> value.OnCompleted()
-    let error(err) = processSubs <| fun value -> value.OnError err
+    let error err = processSubs <| fun value -> value.OnError err
 
     let thisLock = new obj()
     
@@ -64,7 +64,7 @@ type ObservableSource<'a>() =
 
     // The source ought to call these methods in serialized fashion (from 
     // any thread, but serialized and non-reentrant). 
-    member this.Next(obs) =
+    member this.Next obs =
         Debug.Assert(not finished, "IObserver is already finished")
         next obs
 
@@ -73,7 +73,7 @@ type ObservableSource<'a>() =
         finished <- true
         completed()
 
-    member this.Error(err) =
+    member this.Error err =
         Debug.Assert(not finished, "IObserver is already finished")
         finished <- true
         error err
@@ -84,6 +84,7 @@ type ObservableSource<'a>() =
 
     abstract DisposeInternal : unit -> unit
     default this.DisposeInternal() = 
+        if not finished then this.Completed()
         disposed <- true
         subscriptions <- Map.empty
 
@@ -152,7 +153,7 @@ type Property<'a>(?initial: 'a) =
         
 module Bacon =
 
-    let fromObservable (observable : #IObservable<'a>) : Stream<'a> =
+    let private fromObservable' (observable : #IObservable<'a>) : ObservableSource<'a> =
         let newObs : ObservableSource<_> option ref = ref None
         let subscription =
             observable.Subscribe
@@ -166,7 +167,10 @@ module Bacon =
                     subscription.Dispose()
                     base.DisposeInternal() }
         newObs := Some(result)
-        result :> Stream<'a>
+        result
+
+    let fromObservable (observable : #IObservable<'a>) : Stream<'a> =
+        fromObservable' observable :> Stream<'a>
 
     let onValue (handler: 'a -> unit) (observable: #IObservable<'a>) : IDisposable = 
         failwith "Not Implemented"
@@ -236,17 +240,38 @@ module Bacon =
         result :> Stream<'a>
 
     let takeUntil (stopper: IObservable<_>) (observable: #IObservable<'a>) : Stream<'a> =  
-        let takeStream = fromObservable observable
+        let takeStream = fromObservable' observable
         
         let stopperSub =
             stopper.Subscribe
                 { new IObserver<'a> with
-                    member this.OnNext x = takeStream.Dispose()
-                    member this.OnError err = takeStream.Error err
-                    member this.OnCompleted() = takeStream.OnCompleted() }
+                    member o.OnNext x = (takeStream :> IDisposable).Dispose()
+                    member o.OnError err = takeStream.Error err
+                    member o.OnCompleted() = takeStream.Completed() }
+                    
+        takeStream :> Stream<'a>
 
-    let skip : int -> #IObservable<'a> -> IObservable<'a> =  
-        failwith "Not Implemented"
+    let skip (n: int) (observable: #IObservable<'a>) : Stream<'a> =  
+        let counter = ref n
+        let newObs : ObservableSource<_> option ref = ref None
+        let rec subscription : IDisposable =
+            observable.Subscribe
+                { new IObserver<'a> with
+                    member this.OnNext x = 
+                        (!newObs).Value.Next x
+                        counter := !counter - 1
+                        if !counter = 0 then this.OnCompleted()
+                    member this.OnError x = (!newObs).Value.Error x
+                    member this.OnCompleted() = 
+                        (!newObs).Value.Completed()
+                        subscription.Dispose() }
+        let result = 
+            { new ObservableSource<_>() with
+                member this.DisposeInternal() =
+                    subscription.Dispose()
+                    base.DisposeInternal() }
+        newObs := Some(result)
+        result :> Stream<'a>
 
     let skipDuplicates : ('a -> 'a -> bool) -> #IObservable<'a> -> IObservable<'a> =  
         failwith "Not Implemented"
